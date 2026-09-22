@@ -4,6 +4,8 @@ import sys
 import json
 import time
 import re
+import traceback
+from pathlib import Path
 from typing import List, Dict, Optional, Any, Generator
 
 # 强制使用本地 lib 目录中的依赖库（与 ai_client.py 一致，保证 mixin 模块自洽）
@@ -33,6 +35,18 @@ class AIClientStreamingMixin:
         re.compile(r'</?arg_value[^>]*>'),
         re.compile(r'</?redacted_reasoning[^>]*>'),
     ]
+
+    @staticmethod
+    def _log_encoding_traceback(phase):
+        """将编码异常的完整堆栈写入 UTF-8 日志，不记录请求数据。"""
+        try:
+            log_dir = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'HoudiniAgent'
+            log_dir.mkdir(parents=True, exist_ok=True)
+            with (log_dir / 'ai_client_error.log').open('a', encoding='utf-8') as stream:
+                stream.write(f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] phase={phase}\n')
+                stream.write(traceback.format_exc())
+        except Exception:
+            pass
 
     @staticmethod
     def _convert_messages_to_anthropic(messages: List[Dict[str, Any]]) -> tuple:
@@ -656,6 +670,8 @@ class AIClientStreamingMixin:
         # 重试逻辑
         print(f"[AI Client] Requesting {api_url} with model {model}")
         for attempt in range(self._max_retries):
+            response_received = False
+            stream_started = False
             try:
                 with self._http_session.post(
                     api_url,
@@ -665,6 +681,7 @@ class AIClientStreamingMixin:
                     timeout=(10, self._chunk_timeout),  # (连接超时, 读取超时)
                     proxies={'http': None, 'https': None}
                 ) as response:
+                    response_received = True
                     # 强制 UTF-8 编码（requests 对 text/event-stream 默认 ISO-8859-1，会导致中文乱码）
                     response.encoding = 'utf-8'
                     print(f"[AI Client] Response status: {response.status_code}")
@@ -866,6 +883,7 @@ class AIClientStreamingMixin:
                     for raw_chunk in response.iter_content(chunk_size=4096, decode_unicode=False):
                         if not raw_chunk:
                             continue
+                        stream_started = True
 
                         if self._stop_event.is_set():
                             yield {"type": "stopped", "message": "用户停止了请求"}
@@ -967,6 +985,9 @@ class AIClientStreamingMixin:
                 yield {"type": "error", "error": f"连接错误: {str(e)}"}
                 return
             except Exception as e:
+                if isinstance(e, UnicodeEncodeError):
+                    phase = 'response_stream' if stream_started else 'after_response' if response_received else 'post'
+                    self._log_encoding_traceback(phase)
                 err_str = str(e)
                 # InvalidChunkLength / ChunkedEncodingError 等连接中断可重试
                 is_transient = any(k in err_str for k in (

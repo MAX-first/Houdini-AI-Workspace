@@ -50,11 +50,13 @@ class ExternalCoordinator(QObject):
     # 后台构建好的聊天后端（BridgeAgentSession，失败为 None）回传到 UI 线程挂载。
     _session_ready = Signal(object)
 
-    def __init__(self, win, controller, repo_root):
+    def __init__(self, win, controller, repo_root, install_packages=True, allow_houdini_launch=True):
         super().__init__(win)
         self.win = win
         self.controller = controller
         self.repo_root = str(repo_root)
+        self.install_packages = bool(install_packages)
+        self.allow_houdini_launch = bool(allow_houdini_launch)
         self.bridge = BridgeClient()
         self.connected = False
         self.prompted = False
@@ -65,6 +67,7 @@ class ExternalCoordinator(QObject):
         self._session_build_fails = 0
         self._misses = 0            # 已连接状态下心跳连续失败次数
         self._ever_connected = False
+        self.bridge_info = {}
         self.poll = QTimer(win)
         self.poll.setInterval(1500)
         # 周期探测改走非阻塞路径：在后台线程 ping，避免冻结 UI 主线程。
@@ -84,7 +87,8 @@ class ExternalCoordinator(QObject):
 
     def start(self):
         self.installs = find_houdini_installs()
-        self._ensure_packages()
+        if self.install_packages:
+            self._ensure_packages()
         # ★ 不等 Bridge：先把聊天后端建好。没有 Houdini 也必须能正常聊天/用 Meshy，
         #   场景工具在 Bridge 连上后自动生效（BridgeClient 每次请求现连、端口动态解析）。
         self._start_session_build()
@@ -152,6 +156,7 @@ class ExternalCoordinator(QObject):
     def _on_bridge_lost(self):
         """心跳连续丢失：进入断开状态并提速轮询等待恢复（恢复后 _attach 自动重连）。"""
         self.connected = False
+        self.bridge_info = {}
         self._misses = 0
         self.poll.setInterval(1500)     # 恢复快轮询
         self.controller.toast.emit("Houdini 连接已断开——聊天不受影响，重新打开 Houdini 后会自动重连")
@@ -222,6 +227,7 @@ class ExternalCoordinator(QObject):
         """运行在 UI 线程：应用后台探测结果（连接/断开状态机）。"""
         self._probing = False
         if info:
+            self.bridge_info = dict(info)
             self._misses = 0
             if not self.connected:
                 self._attach()
@@ -240,6 +246,9 @@ class ExternalCoordinator(QObject):
         if self.connected or self.prompted:
             return
         self.prompted = True
+        if not self.allow_houdini_launch:
+            self.controller.toast.emit("未检测到 Houdini Bridge，自动启动 Houdini 已禁用")
+            return
         if not self.installs:
             self.installs = find_houdini_installs()
         selected = pick_houdini(self.installs, self.win)
@@ -277,7 +286,7 @@ def _app_icon():
     return QIcon()
 
 
-def show_tool():
+def show_tool(install_packages=True, allow_houdini_launch=True, check_updates=True):
     app = QApplication.instance() or QApplication([])
     app.setWindowIcon(_app_icon())
     repo_root = Path(__file__).resolve().parents[2]
@@ -312,7 +321,11 @@ def show_tool():
     if not restored:
         win.resize(440, 820)
 
-    coord = ExternalCoordinator(win, controller, repo_root)
+    coord = ExternalCoordinator(
+        win, controller, repo_root,
+        install_packages=install_packages,
+        allow_houdini_launch=allow_houdini_launch,
+    )
     try:
         controller.requestOpenHoudini.connect(coord.prompt_relaunch)
     except Exception:
@@ -323,14 +336,19 @@ def show_tool():
     win.raise_()
     win.activateWindow()
     QTimer.singleShot(100, coord.start)
-    QTimer.singleShot(4000, controller.silentUpdateCheck)
+    if check_updates:
+        QTimer.singleShot(4000, controller.silentUpdateCheck)
     app._hagent_external_window = win
     return win
 
 
-def main():
+def main(install_packages=True, allow_houdini_launch=True, check_updates=True):
     app = QApplication.instance() or QApplication([])
-    show_tool()
+    show_tool(
+        install_packages=install_packages,
+        allow_houdini_launch=allow_houdini_launch,
+        check_updates=check_updates,
+    )
     return app.exec_()
 
 

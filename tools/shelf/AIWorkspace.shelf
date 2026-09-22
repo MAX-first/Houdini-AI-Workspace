@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<shelfDocument>
+  <toolshelf name="ai_workspace" label="AI Workspace" shortLabel="AI">
+    <memberTool name="start_ai_workspace"/>
+  </toolshelf>
+  <tool name="start_ai_workspace" label="Start AI" icon="PLASMA_App">
+    <script scriptType="python"><![CDATA[import sys
+
+repo = r"D:\A_ZhuJunbo\AI-Projects\Houdini-AI-Workspace"
+if repo not in sys.path:
+    sys.path.insert(0, repo)
+
+from houdini_agent.launcher.shelf_start import start
+start()]]></script>
+  </tool>
+</shelfDocument>
